@@ -8,12 +8,15 @@ export type CardSettings = {
   height: number;
   /** JPEG 质量 60~100 */
   quality: number;
+  /** #名言照片列表 是否允许所有人查看（false 则仅主人） */
+  listPublic: boolean;
 };
 
 const DEFAULT_SETTINGS: CardSettings = {
   width: 1280,
   height: 640,
-  quality: 92
+  quality: 92,
+  listPublic: true
 };
 
 const SETTINGS_FILE = path.join(process.cwd(), 'data', 'quote-card', 'settings.json');
@@ -24,11 +27,17 @@ const clampInt = (value: unknown, min: number, max: number, fallback: number) =>
   return Math.min(max, Math.max(min, n));
 };
 
+const toBool = (value: unknown, fallback: boolean) => {
+  if (value === undefined || value === null) return fallback;
+  return Boolean(value);
+};
+
 /** 归一化，防止写入非法值 */
 export const normalizeSettings = (input: Partial<CardSettings> = {}, base: CardSettings = DEFAULT_SETTINGS): CardSettings => ({
   width: clampInt(input.width ?? base.width, 480, 3840, base.width),
   height: clampInt(input.height ?? base.height, 240, 2160, base.height),
-  quality: clampInt(input.quality ?? base.quality, 60, 100, base.quality)
+  quality: clampInt(input.quality ?? base.quality, 60, 100, base.quality),
+  listPublic: toBool(input.listPublic, base.listPublic)
 });
 
 /** 读取设置（文件不存在时返回默认值） */

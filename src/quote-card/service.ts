@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { Component, Playwright } from 'jsxp';
 import { getConfigValue } from 'alemonjs';
@@ -252,3 +253,78 @@ export const renderQuoteCard = async (options: QuoteCardImageOptions): Promise<B
 
   return run as Promise<Buffer | null>;
 };
+
+/** 本地文件转 data URL（渲染时内嵌，避免 file:// 被拦） */
+export const fileToDataUrl = async (file: string): Promise<string> => {
+  try {
+    const buf = await fs.readFile(file);
+    const ext = path.extname(file).slice(1).toLowerCase();
+    const mime = EXT_MIME[ext] ?? 'image/jpeg';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch {
+    return '';
+  }
+};
+
+/** 渲染任意页面组件为 JPEG：与卡片共用同一个浏览器实例和串行队列 */
+export const renderPage = async (
+  component: React.ReactElement,
+  quality?: number,
+  viewportWidth = 1280
+): Promise<Buffer | null> => {
+  const settings = await readSettings();
+  const q = quality ?? settings.quality;
+
+  const task = async () => {
+    const html = await new Component().compile({ component } as any, 'local');
+    const buf = await getEngine().render(html, {
+      selector: 'body',
+      screenshot: { type: 'jpeg', quality: q },
+      // 视口必须够宽，否则窄页面会被裁掉右侧（body 固定宽度时要小于等于视口才不裁）
+      playwright: { context: { viewport: { width: viewportWidth, height: 900 } } }
+    });
+    return buf && buf.length ? Buffer.from(buf) : null;
+  };
+
+  const run = renderQueue.then(task, task);
+  renderQueue = run.catch(() => undefined);
+
+  return run as Promise<Buffer | null>;
+};
+
+/** 列表页条目：槽位 + 图片 data URL + 体积文案 */
+export type BgListItem = {
+  slot: number;
+  src: string;
+  size: string;
+};
+
+/** 按槽位顺序读取背景图，供列表页渲染 */
+export const collectBgItems = async (slots: number[]): Promise<BgListItem[]> => {
+  const items: BgListItem[] = [];
+  for (const slot of slots) {
+    const file = await findBgFile(slot);
+    if (!file) continue;
+    const src = await fileToDataUrl(file);
+    if (!src) continue;
+    let size = '';
+    try {
+      const stat = await fs.stat(file);
+      size =
+        stat.size >= 1024 * 1024
+          ? `${(stat.size / 1024 / 1024).toFixed(1)}MB`
+          : `${Math.round(stat.size / 1024)}KB`;
+    } catch {
+      size = '';
+    }
+    items.push({ slot, src, size });
+  }
+  return items;
+};
+
+/** 帮助页背景图：随包发布的 assets/help-bg.jpg（缺失时由调用方兜底） */
+export const HELP_BG_FILE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'assets',
+  'help-bg.jpg'
+);

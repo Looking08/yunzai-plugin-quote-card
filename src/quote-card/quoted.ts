@@ -52,6 +52,12 @@ export const parseSlot = (text: string): number => {
   return n && n > 0 ? n : 1;
 };
 
+/** 只解析「指令末尾显式写了数字」的情况；没写返回 0（表示自动排号） */
+export const parseExplicitSlot = (text: string): number => {
+  const m = String(text ?? '').trim().match(/(\d+)$/);
+  return m ? parseInt(m[1], 10) : 0;
+};
+
 /** 统一的「被引用消息」结构，屏蔽各平台差异 */
 export type QuotedContent = {
   text: string;
