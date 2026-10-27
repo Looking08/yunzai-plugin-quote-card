@@ -1,5 +1,21 @@
 # 更新日志
 
+## v1.1.2
+
+### 修复
+
+- **`名言照片列表` 渲染超时**：`page.setContent: Timeout 60000ms exceeded`。
+  列表页把每张背景都转成 base64 内嵌进 HTML，背景一多 HTML 就涨到几十 MB
+  （5 张原图共 43MB ≈ 57MB 字符串），`setContent` 传不动，60 秒必超时。
+
+  改法两条：
+  1. HTML 里只放 `file://` 路径，HTML 落到临时文件后用 `page.goto` 打开，
+     浏览器自己去读本地文件，传输量从几十 MB 降到几 KB；
+  2. 给每张背景生成 480px 缩略图缓存（`backgrounds/.thumbs/`，用 Chromium 自己解码缩放，
+     不额外依赖 sharp / ffmpeg），列表页只渲染小图，添加背景时顺手预热。
+
+  实测 5 张（43MB）从「>60s 超时」降到 2~4 秒。
+
 ## v1.1.1
 
 ### 修复

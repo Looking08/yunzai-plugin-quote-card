@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import React from 'react';
 import { Component, Playwright } from 'jsxp';
 import { getConfigValue } from 'alemonjs';
@@ -143,6 +143,12 @@ export const clearBgFile = async (n: number) => {
   } catch {
     // 忽略
   }
+  // 缩略图缓存一起清掉，免得删了背景列表里还留着旧图
+  try {
+    await fs.unlink(path.join(THUMB_DIR, `custom-${n}.jpg`));
+  } catch {
+    // 忽略
+  }
 };
 
 export const listBgSlots = async (): Promise<number[]> => {
@@ -164,7 +170,10 @@ export const saveBg = async (n: number, buf: Buffer) => {
   const type = detectType(buf);
   await ensureBgDir();
   await clearBgFile(n);
-  await fs.writeFile(path.join(BG_DIR, `custom-${n}.${type.ext}`), buf);
+  const target = path.join(BG_DIR, `custom-${n}.${type.ext}`);
+  await fs.writeFile(target, buf);
+  // 顺手把缩略图备好（不 await，别拖慢「已保存」的回复）；失败也无所谓，列表时会再试
+  ensureThumb(target).catch(() => undefined);
   return type;
 };
 
@@ -266,7 +275,108 @@ export const fileToDataUrl = async (file: string): Promise<string> => {
   }
 };
 
-/** 渲染任意页面组件为 JPEG：与卡片共用同一个浏览器实例和串行队列 */
+/** 页面渲染专用浏览器：列表页图片走 file://，不把几十 MB base64 塞进 HTML */
+let pageBrowser: any = null;
+let pageBrowserIdle: any = null;
+
+const getPageBrowser = async () => {
+  const { chromium } = await import('playwright-core');
+  if (pageBrowser && pageBrowser.isConnected()) {
+    if (pageBrowserIdle) {
+      clearTimeout(pageBrowserIdle);
+      pageBrowserIdle = null;
+    }
+    return pageBrowser;
+  }
+  pageBrowser = await chromium.launch({
+    headless: true,
+    executablePath: CHROMIUM_PATH,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--allow-file-access-from-files'
+    ]
+  });
+  return pageBrowser;
+};
+
+/** 空闲 5 分钟自动关掉，别长期占内存 */
+const touchPageBrowserIdle = () => {
+  if (pageBrowserIdle) clearTimeout(pageBrowserIdle);
+  pageBrowserIdle = setTimeout(() => {
+    pageBrowser?.close?.().catch(() => undefined);
+    pageBrowser = null;
+    pageBrowserIdle = null;
+  }, 5 * 60 * 1000);
+  pageBrowserIdle?.unref?.();
+};
+
+/** 缩略图宽度：列表页每格只有 190px 高，喂原图纯属浪费 */
+const THUMB_WIDTH = 480;
+const THUMB_DIR = path.join(BG_DIR, '.thumbs');
+
+/**
+ * 生成（或复用）某张背景的缩略图，返回缩略图路径；失败返回 null
+ * 用 Chromium 自己解码缩放，不额外依赖 sharp / ffmpeg
+ */
+const ensureThumb = async (file: string): Promise<string | null> => {
+  const out = path.join(THUMB_DIR, `${path.basename(file).replace(/\.[^.]+$/, '')}.jpg`);
+  try {
+    const [srcStat, thumbStat] = await Promise.all([fs.stat(file), fs.stat(out).catch(() => null)]);
+    if (thumbStat && thumbStat.mtimeMs >= srcStat.mtimeMs && thumbStat.size > 1024) return out;
+  } catch {
+    // 交给下面重建
+  }
+  try {
+    await fs.mkdir(THUMB_DIR, { recursive: true });
+    const browser = await getPageBrowser();
+    const page = await browser.newPage({ viewport: { width: THUMB_WIDTH, height: THUMB_WIDTH } });
+    try {
+      await page.goto(pathToFileURL(file).href, { waitUntil: 'load', timeout: 30_000 });
+      // 按最长边 480 等比缩放，同时把页面尺寸调成缩放后的尺寸，避免截图带白边
+      const dim = await page.evaluate((maxW: number) => {
+        const img = document.querySelector('img') as HTMLImageElement | null;
+        const nw = img?.naturalWidth || maxW;
+        const nh = img?.naturalHeight || maxW;
+        const w = Math.max(1, Math.min(nw, maxW));
+        const h = Math.max(1, Math.round((nh * w) / nw));
+        if (img) {
+          img.style.width = `${w}px`;
+          img.style.height = `${h}px`;
+          img.style.display = 'block';
+        }
+        document.documentElement.style.margin = '0';
+        document.body.style.margin = '0';
+        return { w, h };
+      }, THUMB_WIDTH);
+      await page.setViewportSize({ width: dim.w, height: dim.h });
+      const buf = await page.screenshot({
+        type: 'jpeg',
+        quality: 75,
+        clip: { x: 0, y: 0, width: dim.w, height: dim.h }
+      });
+      if (!buf || !buf.length) return null;
+      await fs.writeFile(out, buf);
+      return out;
+    } finally {
+      await page.close().catch(() => undefined);
+      touchPageBrowserIdle();
+    }
+  } catch (err: any) {
+    logger.warn(`[名言卡片] 生成缩略图失败 ${path.basename(file)}: ${err.message}`);
+    return null;
+  }
+};
+
+/**
+ * 渲染任意页面组件为 JPEG
+ *
+ * 之前是把 HTML（含每张背景的 base64 内嵌）直接交给 page.setContent，
+ * 背景一多 HTML 就涨到几十 MB（5 张 43MB 的原图 ≈ 57MB），setContent 60s 超时。
+ * 现在图片在 HTML 里只放 file:// 路径，HTML 写到临时文件后用 page.goto 打开，
+ * 传输量从几十 MB 降到几 KB，由浏览器自己去读本地文件。
+ */
 export const renderPage = async (
   component: React.ReactElement,
   quality?: number,
@@ -277,13 +387,23 @@ export const renderPage = async (
 
   const task = async () => {
     const html = await new Component().compile({ component } as any, 'local');
-    const buf = await getEngine().render(html, {
-      selector: 'body',
-      screenshot: { type: 'jpeg', quality: q },
-      // 视口必须够宽，否则窄页面会被裁掉右侧（body 固定宽度时要小于等于视口才不裁）
-      playwright: { context: { viewport: { width: viewportWidth, height: 900 } } }
-    });
-    return buf && buf.length ? Buffer.from(buf) : null;
+    const tmp = path.join(process.cwd(), 'data', `.qc-page-${process.pid}.html`);
+    await fs.mkdir(path.dirname(tmp), { recursive: true });
+    await fs.writeFile(tmp, html, 'utf8');
+    try {
+      const browser = await getPageBrowser();
+      const page = await browser.newPage({ viewport: { width: viewportWidth, height: 900 } });
+      try {
+        await page.goto(pathToFileURL(tmp).href, { waitUntil: 'load', timeout: 30_000 });
+        const buf = await page.screenshot({ type: 'jpeg', quality: q, fullPage: true });
+        return buf && buf.length ? Buffer.from(buf) : null;
+      } finally {
+        await page.close().catch(() => undefined);
+      }
+    } finally {
+      touchPageBrowserIdle();
+      await fs.unlink(tmp).catch(() => undefined);
+    }
   };
 
   const run = renderQueue.then(task, task);
@@ -292,7 +412,7 @@ export const renderPage = async (
   return run as Promise<Buffer | null>;
 };
 
-/** 列表页条目：槽位 + 图片 data URL + 体积文案 */
+/** 列表页条目：槽位 + 图片地址 + 体积文案 */
 export type BgListItem = {
   slot: number;
   src: string;
@@ -305,8 +425,9 @@ export const collectBgItems = async (slots: number[]): Promise<BgListItem[]> => 
   for (const slot of slots) {
     const file = await findBgFile(slot);
     if (!file) continue;
-    const src = await fileToDataUrl(file);
-    if (!src) continue;
+    // 优先用缩略图：原图动辄十几 MB、几千像素，5 张就能把渲染拖到 30s 以上
+    const thumb = await ensureThumb(file);
+    const src = pathToFileURL(thumb || file).href;
     let size = '';
     try {
       const stat = await fs.stat(file);
