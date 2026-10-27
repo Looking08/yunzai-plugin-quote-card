@@ -95,8 +95,33 @@ node index.js --platform @alemonjs/onebot --serverPort 17117
 | 命令 | 说明 |
 | --- | --- |
 | `名言` | 引用一条消息后发送，生成名言卡片 |
-| `添加名言照片N` | 附带图片（或引用一张图）保存到槽位 N（1~100，仅主人） |
+| `添加名言照片` | 一次可发多张图 + 指令，按发送顺序自动排号（仅主人） |
+| `添加名言照片N` | 从槽位 N 开始依次排（N 上限 100，仅主人） |
 | `删除名言照片N` | 删除槽位 N 的背景（仅主人） |
+| `名言照片列表` | 查看已有背景，**直接发一张缩略图总览**（默认所有人，可在管理页关闭） |
+| `名言帮助` | 图片版功能说明 |
+
+### 批量添加
+
+```
+[图1][图2][图3]  添加名言照片
+→ ✅ 已保存 3 张：#1 ~ #3
+[图4][图5]       添加名言照片
+→ ✅ 已保存 2 张：#4 ~ #5
+[图6][图7]       添加名言照片10
+→ ✅ 已保存 2 张：#10 ~ #11
+```
+
+不带数字时**接在现有最大槽位后面**，所以删掉中间槽位不会让新图去填坑。
+超过 100 的部分会丢弃并在回复里提示；单张失败不影响其它张。
+
+### 列表与帮助
+
+`名言照片列表` 生成的是一张完整的图（含总数、槽位编号、删除提示），**直接作为图片消息发出**，
+不包合并转发；槽位编号固定在缩略图上层，不会被图片盖住。
+
+`名言帮助` 用包内附带的 `lib/quote-card/assets/help-bg.jpg` 作背景（缺失时回退到一张用户背景图，
+再没有就用深色渐变），叠加深色蒙版保证文字可读。
 
 背景图存在 `<宿主项目 cwd>/data/quote-card/backgrounds/custom-<N>.<ext>`；
 生成卡片时从已有槽位随机挑一张，一张都没有就用随机纯色玻璃卡片。
@@ -106,6 +131,7 @@ node index.js --platform @alemonjs/onebot --serverPort 17117
 `GET /app/api/quote-card/admin`（拼在宿主项目的 HTTP 端口下）：
 
 - 分辨率预设（1280×640 / 1920×960 / 1080×540 / 2560×1280）或手填宽高 + 画质
+- 「照片列表允许所有人查看」开关（默认开启，关闭后只有主人能用 `名言照片列表`）
 - 实时预览
 - 背景图上传（本地文件或 URL）、缩略图列表、删除
 - 设置持久化在 `data/quote-card/settings.json`
@@ -117,8 +143,8 @@ HTTP API（统一返回 `{code, message, data}`）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/quote-card/settings` | 读取分辨率设置 |
-| POST | `/api/quote-card/settings` | 写入 `{width, height, quality}` |
+| GET | `/api/quote-card/settings` | 读取设置（含 `listPublic`） |
+| POST | `/api/quote-card/settings` | 写入 `{width, height, quality, listPublic}` |
 | GET | `/api/quote-card/backgrounds` | 已用槽位列表 |
 | POST | `/api/quote-card/backgrounds` | 上传（`{slot, dataUrl}`） |
 | POST | `/api/quote-card/backgrounds/url` | 按 URL 抓取保存 |
@@ -144,27 +170,34 @@ HTTP API（统一返回 `{code, message, data}`）：
 
 ## 目录结构
 
+本分支是**构建产物**，不含 `src/` 与构建配置：
+
 ```
 .
 ├── package.json              # name/main/exports；运行期依赖仅 jsxp
-├── tsconfig.json
-├── lvy.config.ts             # 构建配置（无 CSS/Tailwind 处理，纯 TS/TSX）
-├── LICENSE
-└── src/
-    ├── index.ts              # 注册消息路由 + koaRouter（HTTP 管理页）
-    ├── env.d.ts              # 类型引用
+├── README.md
+├── CHANGELOG.md              # 版本更新说明
+└── lib/
+    ├── index.js              # 注册消息路由 + koaRouter（HTTP 管理页）
     └── quote-card/
-        ├── index.ts          # 正则路由（名言 / 添加名言照片N / 删除名言照片N）
-        ├── run.ts            # 名言主流程
-        ├── add-bg.ts         # 添加背景（仅主人）
-        ├── del-bg.ts         # 删除背景（仅主人）
-        ├── quoted.ts         # 跨平台引用消息解析（OneBot / QQ 官方）
-        ├── card.tsx          # React 卡片组件
-        ├── service.ts        # 渲染引擎、背景存取、头像地址
-        ├── settings.ts       # 分辨率设置读写与钳制
-        ├── admin.ts          # 管理页 HTML（零构建，原生 JS）
-        └── http.ts           # /api/quote-card/* 接口
+        ├── index.js          # 正则路由（名言 / 添加 / 删除 / 照片列表 / 帮助）
+        ├── run.js            # 名言主流程
+        ├── add-bg.js         # 批量添加背景（仅主人）
+        ├── del-bg.js         # 删除背景（仅主人）
+        ├── list-bg.js        # 照片列表：渲染缩略图总览并直接发图
+        ├── list-page.js      # 列表页渲染（React 组件经 lvy 编译）
+        ├── help.js           # 图片版帮助
+        ├── help-page.js      # 帮助页渲染
+        ├── assets/           # 帮助页背景图 help-bg.jpg
+        ├── quoted.js         # 跨平台引用消息解析（OneBot / QQ 官方）
+        ├── card.js           # React 卡片组件
+        ├── service.js        # 渲染引擎、背景存取、头像地址
+        ├── settings.js       # 分辨率 / 列表公开开关的读写与钳制
+        ├── admin.js          # 管理页 HTML（零构建，原生 JS）
+        └── http.js           # /api/quote-card/* 接口
 ```
+
+改代码请切 `alemonjs` 分支，改完 `npm run build` 再同步产物到本分支。版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 
