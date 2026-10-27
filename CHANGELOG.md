@@ -1,5 +1,25 @@
 # 更新日志
 
+## v1.1.1
+
+### 修复
+
+- **QQ 官方机器人「带图 + 命令」无法触发**：qq-bot 会把附件拼成标签放在正文前面，
+  形如 `<attachmentType="image/jpeg",attachmentIndex=0,description="...">添加名言照片`。
+  alemon 的路由是按整段原文（`MessageText`）整句匹配的，且不会剥掉这些标签，
+  于是 `添加名言照片` 一发图就匹配失败（`Reason:filtered`），表现就是「发指令没反应」。
+  现在 5 条命令的正则都允许首尾出现若干 `<...>` 标签：
+
+  ```ts
+  const TAG = '<[^>]*>';
+  const LEAD = `(?:\\s*${TAG})*\\s*`;
+  const TAIL = `(?:\\s*${TAG})*`;
+  const route = (body: string) => new RegExp(`^${LEAD}${PREFIX}${body}${TAIL}$`);
+  ```
+
+  纯文字命令（`名言`、`名言帮助`、`名言照片列表`）行为不变；
+  `添加名言照片N` 的槽位号仍然只认末尾数字，不会被 `attachmentIndex=0` 干扰。
+
 ## v1.1.0
 
 与 Yunzai 版 v1.2.0 功能对齐。

@@ -14,16 +14,29 @@ const EVENTS = ['message.create', 'private.message.create'] as const;
 /** 前缀可选：# ＃ / ！ ! */
 const PREFIX = '[#＃/!！]?';
 
+/**
+ * QQ 官方机器人（qq-bot）的正文会把附件拼成标签放在文字前面，形如
+ *   <attachmentType="image/jpeg",attachmentIndex=0,description="...">#添加名言照片
+ * alemon 的路由是按整段原文（MessageText）匹配的，不会剥掉这些标签，
+ * 于是「带图 + 命令」的写法会匹配失败。这里允许命令两侧出现若干这类标签。
+ */
+const TAG = '<[^>]*>';
+const LEAD = `(?:\\s*${TAG})*\\s*`;
+const TAIL = `(?:\\s*${TAG})*`;
+
+/** 生成一条容错正则：忽略首尾的附件标签 */
+const route = (body: string) => new RegExp(`^${LEAD}${PREFIX}${body}${TAIL}$`);
+
 export const registerQuoteCard = (router: any) => {
   // 使用 regular 路由直接匹配原文，避免依赖 keyPolicy 分词
   // 注意顺序：#名言照片列表 / #名言帮助 必须排在 #名言 之前（虽然正则各带 $ 锚点，仍保持直观）
-  router.res({ events: [...EVENTS], regular: new RegExp(`^${PREFIX}名言照片列表$`) }, () => import('./list-bg'));
+  router.res({ events: [...EVENTS], regular: route('名言照片列表') }, () => import('./list-bg'));
 
-  router.res({ events: [...EVENTS], regular: new RegExp(`^${PREFIX}名言帮助$`) }, () => import('./help'));
+  router.res({ events: [...EVENTS], regular: route('名言帮助') }, () => import('./help'));
 
-  router.res({ events: [...EVENTS], regular: new RegExp(`^${PREFIX}名言$`) }, () => import('./run'));
+  router.res({ events: [...EVENTS], regular: route('名言') }, () => import('./run'));
 
-  router.res({ events: [...EVENTS], regular: new RegExp(`^${PREFIX}添加名言照片(\\d*)$`) }, () => import('./add-bg'));
+  router.res({ events: [...EVENTS], regular: route('添加名言照片(\\d*)') }, () => import('./add-bg'));
 
-  router.res({ events: [...EVENTS], regular: new RegExp(`^${PREFIX}删除名言照片(\\d*)$`) }, () => import('./del-bg'));
+  router.res({ events: [...EVENTS], regular: route('删除名言照片(\\d*)') }, () => import('./del-bg'));
 };
