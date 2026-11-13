@@ -1,5 +1,20 @@
 # 更新日志
 
+## v1.1.3
+
+### 修复
+
+- **报错被截断到 50 字符，看不出真正原因**：`❌ 帮助图生成失败: ...` 之前对 `err.message`
+  做了 `slice(0, 50)`，于是
+  `browserType.launch: Failed to launch chromium because executable doesn't exist at ...`
+  只剩半句 `...chromium beca`。现在保留 180 字符，日志里记完整 `stack`。
+- **Chromium 启动失败直接放弃**：改为失败后 800ms 重试一次（Docker 刚重启、资源临时紧张时能自救）；
+  两次都失败时，把原因翻译成中文建议一起返回 ——
+  可执行文件缺失 / 依赖缺失 / 磁盘写满 / 内存不足 / 启动超时 / 进程崩溃。
+- **浏览器半死会持续失败**：检测到 `Target closed` / `has been closed` / `crash` /
+  `Protocol error` 之类错误时主动丢弃浏览器实例，下次渲染自动重建
+  （之前要等 5 分钟空闲回收才会重建）。
+
 ## v1.1.2
 
 ### 修复

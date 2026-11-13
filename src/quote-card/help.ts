@@ -55,7 +55,7 @@ export default async () => {
     format.addImage(img);
     await message.send({ format });
   } catch (err) {
-    logger.error(`[名言卡片] 帮助图渲染失败: ${(err as Error).message}`);
-    await reply(`❌ 帮助图生成失败: ${(err as Error).message.slice(0, 50)}`);
+    logger.error(`[名言卡片] 帮助图渲染失败: ${(err as Error)?.stack ?? (err as Error)?.message ?? err}`);
+    await reply(`❌ 帮助图生成失败: ${String((err as Error)?.message ?? err).slice(0, 180)}`);
   }
 };
