@@ -1,5 +1,24 @@
 # 更新日志
 
+## v1.1.4
+
+### 新增
+
+- **Expose 插件间共享能力（类 MCP）**：`defineChildren().register()` 现在会带出
+  `expose`，协议名 `quote-card`，共 9 个动作 ——
+  `get_help` / `render_card` / `render_help` / `render_gallery` / `list_backgrounds` /
+  `get_settings` / `set_settings` / `add_background` / `delete_background`。
+  出图类动作返回 JPEG data URL，其余返回 JSON 字符串，统一 `{status, text, image, data}`
+  外壳；业务失败落 `status: 'error'` 不抛异常，只有权限失败才抛。
+  消费示例与配置见 README「插件间共享：Expose」一节。
+- **双版本兼容**：运行期探测 `Expose.action` 是否存在 ——
+  有（alemonjs 2.1.12x）就生成带 `inputSchema` / `outputSchema` / `effect` / `authorize`
+  的新式动作；没有（2.1.11x）退回 `{ description, params, returns, handler }`，
+  入参与权限校验在 handler 内部兜底。框架完全不提供 `Expose` 时自动跳过该字段，不影响插件加载。
+- **写操作默认仅主人**：`set_settings` / `add_background` / `delete_background` 会校验
+  当前消息事件的 `IsMaster`，可用 `quote-card.expose.require_master_for_write: false` 放开；
+  另有 `enabled` 总开关与 `allowed_callers` 白名单。
+
 ## v1.1.3
 
 ### 修复

@@ -152,6 +152,73 @@ HTTP API（统一返回 `{code, message, data}`）：
 | DELETE | `/api/quote-card/backgrounds/:slot` | 删除该槽位 |
 | POST | `/api/quote-card/preview` | 用给定文本/背景生成预览图 |
 
+## 插件间共享：Expose（类 MCP）
+
+插件通过 alemonjs 的 **Expose** 把能力注册成结构化动作，同一运行实例里的其他插件 / AI
+可以像调 MCP 工具一样调用它（协议名 `quote-card`）。参考实现：alemonjs-roco 的 `game-hub`。
+
+### 动作清单
+
+| 动作 | 类型 | 入参 | 产出 |
+| --- | --- | --- | --- |
+| `get_help` | read | — | 指令清单（纯文本，给 AI 当索引用） |
+| `render_card` | read | `text`（必填）、`author`、`qq`、`avatarUrl`、`bgColor`、`background` | JPEG data URL |
+| `render_help` | read | — | 帮助图 JPEG data URL |
+| `render_gallery` | read | — | 背景总览图 JPEG data URL |
+| `list_backgrounds` | read | — | 槽位号 / 体积 / 格式 / 480px 缩略图 |
+| `get_settings` | read | — | `{width, height, quality, listPublic}` |
+| `set_settings` | **write** | 同上，任意子集 | 写入后的完整设置 |
+| `add_background` | **write** | `image`（data URL 或 http 地址）、`slot` | 保存到的槽位 |
+| `delete_background` | **write** | `slot` | 删掉的槽位 |
+
+所有动作统一返回：
+
+```ts
+{ status: 'success' | 'error', text: string, image: string, data: string }
+```
+
+- `image` 是 `data:image/jpeg;base64,...`（无图时为空串）；
+- `data` 是 JSON **字符串**（结构随动作不同，消费方自行 `JSON.parse`）；
+- 业务失败（背景没图、渲染返回空）落进 `status: 'error'`，**不抛异常**；
+  权限失败才抛（旧框架冒泡，新框架返回 `FORBIDDEN`）。
+
+### 消费方写法
+
+```ts
+// 新框架（alemonjs >= 2.1.12x）：带超时 + 结构化错误
+import { Expose } from 'alemonjs'
+const r = await Expose.create().call(
+  'quote-card',
+  'my-plugin',                       // 你的插件名（写进 callerApp）
+  'render_card',
+  { text: '人生如逆旅，我亦是行人', author: '苏轼' },
+  { timeoutMs: 20000 }
+)
+if (r.ok) console.log(r.data.image.slice(0, 32)) // data:image/jpeg;base64,...
+
+// 旧框架（alemonjs 2.1.11x）
+import { Expose } from 'alemonjs'
+const [provider] = Expose.create().list('quote-card')
+const out = await provider.invoke('render_card', { text: '人生如逆旅', author: '苏轼' })
+```
+
+`Expose.create().schema()` 能直接拿到全部协议与动作（含 `inputSchema` / `outputSchema`），
+AI 侧据此做工具发现。
+
+### 配置（`alemon.config.yaml` 顶层）
+
+```yaml
+quote-card:
+  expose:
+    enabled: true                  # 总开关，默认 true
+    allowed_callers: []            # 允许的调用方插件名；留空 = 不限
+    require_master_for_write: true # 写操作仅限机器人主人，默认 true
+```
+
+写操作的「主人」身份取自**当前正在处理的消息事件**（`IsMaster`），
+所以调用链必须发生在某条聊天消息的处理过程中；定时任务里直接改设置会被拒绝。
+`allowed_callers` 非空时，无插件身份（没写 `callerApp`）的调用一律拒绝。
+
 ## 平台差异与已知限制
 
 **OneBot（NapCat / Lagrange）** —— 推荐用于署名准确的场景。
@@ -177,10 +244,11 @@ HTTP API（统一返回 `{code, message, data}`）：
 ├── lvy.config.ts             # 构建配置（无 CSS/Tailwind 处理，纯 TS/TSX）
 ├── LICENSE
 └── src/
-    ├── index.ts              # 注册消息路由 + koaRouter（HTTP 管理页）
+    ├── index.ts              # 注册消息路由 + koaRouter（HTTP 管理页）+ expose
     ├── env.d.ts              # 类型引用
     └── quote-card/
         ├── index.ts          # 正则路由（名言 / 添加 / 删除 / 照片列表 / 帮助）
+        ├── expose.ts         # Expose 提供者（插件间共享，兼容 2.1.11x / 2.1.12x）
         ├── run.ts            # 名言主流程
         ├── add-bg.ts         # 批量添加背景（仅主人）
         ├── del-bg.ts         # 删除背景（仅主人）
