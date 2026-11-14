@@ -6,6 +6,7 @@ import { Component, Playwright } from 'jsxp';
 import { getConfigValue } from 'alemonjs';
 import QuoteCard from './card';
 import { readSettings } from './settings';
+import { cleanError, launchErrorHint, resolveBrowserPath } from './browser';
 
 export const MAX_SLOT = 100;
 
@@ -207,18 +208,20 @@ export type QuoteCardImageOptions = {
   bgColor?: string;
 };
 
-/** 浏览器可执行文件（容器内为 apk 安装的 chromium） */
-const CHROMIUM_PATH =
-  process.env.JSXP_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser';
-
+/** 浏览器可执行文件由 browser.ts 探测（不再写死容器路径） */
 let engine: any = null;
 
 /** 复用同一个无头浏览器实例，显式关闭沙箱以适配容器环境 */
 const getEngine = () => {
   if (!engine) {
+    const executablePath = resolveBrowserPath();
+    if (!executablePath) {
+      // 早点说清楚，别等 jsxp 内部抛一句看不出所以然的话
+      throw new Error('未找到可用的浏览器：装一个 Chrome / Chromium / Edge 即可，或用 JSXP_EXECUTABLE_PATH 指定路径（安装指引见日志）');
+    }
     engine = new Playwright({
       headless: true,
-      executablePath: CHROMIUM_PATH,
+      executablePath,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none']
     });
   }
@@ -249,10 +252,20 @@ export const renderQuoteCard = async (options: QuoteCardImageOptions): Promise<B
     });
 
     const html = await new Component().compile({ component: element } as any, 'local');
-    const buf = await getEngine().render(html, {
-      selector: 'body',
-      screenshot: { type: 'jpeg', quality: settings.quality }
-    });
+    let buf: Uint8Array | null = null;
+    try {
+      buf = await getEngine().render(html, {
+        selector: 'body',
+        screenshot: { type: 'jpeg', quality: settings.quality }
+      });
+    } catch (err: any) {
+      const detail = String(err?.message ?? err);
+      // 已经是人话（比如 getEngine 提前抛的「未找到可用的浏览器…」）就原样往上抛
+      if (detail.includes('未找到可用的浏览器')) throw err;
+      const hint = launchErrorHint(detail, resolveBrowserPath());
+      logger.error(`[名言卡片] jsxp 渲染失败: ${detail}`);
+      throw new Error(hint ? `渲染失败: ${cleanError(detail)}${hint}` : detail);
+    }
 
     return buf && buf.length ? Buffer.from(buf) : null;
   };
@@ -284,9 +297,11 @@ const launchPageBrowser = async () => {
   const pw: any = await import('playwright-core');
   const chromium = pw.chromium ?? pw.default?.chromium;
   if (!chromium?.launch) throw new Error('playwright-core 未正确加载（chromium 为 undefined）');
+  const executablePath = resolveBrowserPath();
   return chromium.launch({
     headless: true,
-    executablePath: CHROMIUM_PATH,
+    // 探到了就用它；没探到就别传，交给 playwright 自己按内置 registry 找
+    ...(executablePath ? { executablePath } : {}),
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -294,20 +309,6 @@ const launchPageBrowser = async () => {
       '--allow-file-access-from-files'
     ]
   });
-};
-
-/** 把 launch 失败原因翻译成一句话建议，附在错误后面 */
-const launchErrorHint = (msg: string): string => {
-  const m = String(msg);
-  if (/ENOENT|doesn't exist|no such file|not found/i.test(m))
-    return `（可执行文件不存在：${CHROMIUM_PATH}，请检查镜像是否装好 chromium）`;
-  if (/Cannot find module|playwright-core/i.test(m)) return '（依赖缺失：playwright-core 未安装）';
-  if (/ENOSPC|no space left/i.test(m)) return '（磁盘写满，Chromium 无法创建临时文件，请清理磁盘）';
-  if (/Cannot allocate memory|out of memory|ENOMEM/i.test(m))
-    return '（内存不足，Chromium 起不来，请给 Docker 多分点内存或稍后重试）';
-  if (/Timeout|timed out/i.test(m)) return '（启动超时，通常是宿主机或 Docker 负载太高）';
-  if (/crash|Target closed|Connection closed/i.test(m)) return '（浏览器进程崩溃，可能是 Docker/磁盘/内存异常）';
-  return '';
 };
 
 /**
@@ -340,8 +341,14 @@ const getPageBrowser = async (): Promise<any> => {
     }
   }
 
+  // 没有可用浏览器时，别让用户在聊天里看 playwright 的技术细节 —— 直接给能照做的结论
+  const attempted = resolveBrowserPath();
   const detail = String(lastErr?.message ?? lastErr);
-  throw new Error(`启动 Chromium 失败: ${detail}${launchErrorHint(detail)}`);
+  logger.error(`[名言卡片] 启动浏览器失败: ${detail}`);
+  if (!attempted) {
+    throw new Error(`未找到可用的浏览器：装一个 Chrome / Chromium / Edge 即可，或用 JSXP_EXECUTABLE_PATH 指定路径（安装指引见日志）`);
+  }
+  throw new Error(`启动 Chromium 失败: ${cleanError(detail)}${launchErrorHint(detail, attempted)}`);
 };
 
 /** 空闲 5 分钟自动关掉，别长期占内存 */

@@ -1,5 +1,27 @@
 # 更新日志
 
+## v1.1.5
+
+### 修复
+
+- **别人装完就报 `executable doesn't exist at /usr/bin/chromium-browser`**：
+  之前把容器里的路径当默认值写死（`process.env.JSXP_EXECUTABLE_PATH || … || '/usr/bin/chromium-browser'`），
+  于是 macOS、Windows、非 Debian 发行版全都在出图时报这个错 —— 只在我这台机器上「能用」。
+
+  现在改为**自动探测**（新增 `src/quote-card/browser.ts`），顺序是：
+  环境变量 → `PATH` 里的命令名 → 各平台标准安装路径（macOS 的 `.app`、Windows 的 Program Files、
+  Linux 的 `/usr/bin` `/snap/bin` `/opt`）→ playwright / puppeteer 下载缓存。
+  探到的路径同时用于两条渲染链路：jsxp 的 `Playwright`（卡片）与直接 `playwright-core`（帮助图/列表图）。
+
+- **环境变量填错不再一错到底**：指向不存在的文件时会被跳过（继续探测），不会把整个出图卡死。
+
+- **报错说人话**：没有浏览器时回复
+  `未找到可用的浏览器：装一个 Chrome / Chromium / Edge 即可，或设置 JSXP_EXECUTABLE_PATH 指定路径`，
+  完整的多行安装指引（apt / apk / dnf / `npx playwright-core install chromium`）写进日志。
+
+- **启动自检**：插件加载时先打一行 `[名言卡片] 渲染浏览器: <路径>`；
+  找不到就打 `⚠️` 开头的指引，不用等用户发第一条指令才发现问题。
+
 ## v1.1.4
 
 ### 新增

@@ -18,6 +18,17 @@ import koaRouter from 'koa-router';
 import { registerQuoteCard } from './quote-card';
 import { registerQuoteCardHttp } from './quote-card/http';
 import { quoteCardExpose } from './quote-card/expose';
+import { browserStatusLine } from './quote-card/browser';
+
+// 出图依赖本机已装的 Chrome / Chromium / Edge：启动时先把探测结果打出来，
+// 免得等到用户第一次发指令才发现没有浏览器
+try {
+  const line = browserStatusLine();
+  if (line.startsWith('⚠️')) logger.warn(`[名言卡片] ${line}`);
+  else logger.info(`[名言卡片] ${line}`);
+} catch {
+  // logger 还没就绪就算了，不能因为一行日志影响插件加载
+}
 
 // 管理台 HTTP 接口
 const r = new koaRouter({
