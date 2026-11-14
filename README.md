@@ -68,15 +68,47 @@ alemonc add apps alemonjs-quote-card
 > 用 yarn / pnpm 的话，对应 `yarn add file:./packages/alemonjs-quote-card`，
 > 或把 `"workspaces": ["packages/*"]` 写进宿主 package.json 后直接 `install`（会自动建软链）。
 
-### 浏览器（jsxp 截图用）
+### 浏览器（截图用，唯一需要环境配合的东西）
 
-jsxp 会自己探测本机浏览器，**通常不用配**：macOS 依次找 Google Chrome / Chromium / Edge，
-Linux 找 `chromium` / `google-chrome`，Windows 找 Program Files 下的 Chrome / Edge。
-探测不到时再用环境变量指定：
+出图靠一个真实的 Chromium。插件**不写死任何路径**，按下面顺序自动找，找到就用：
+
+1. 环境变量：`JSXP_EXECUTABLE_PATH` / `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` / `CHROMIUM_PATH` / `GOOGLE_CHROME_BIN`
+2. `PATH` 里的命令：`chromium` / `chromium-browser` / `google-chrome` / `chrome` / `microsoft-edge` / `msedge` / `brave-browser`
+3. 各平台标准安装位置：
+   - macOS：`/Applications` 与 `~/Applications` 下的 Google Chrome / Chromium / Edge / Brave
+   - Windows：`Program Files` / `LocalAppData` 下的 Chrome / Edge / Brave
+   - Linux：`/usr/bin`、`/usr/local/bin`、`/snap/bin`、`/opt/google/chrome` 等
+4. playwright / puppeteer 的下载缓存（`npx playwright-core install chromium` 装的那份）
+
+启动时日志会打一行 `[名言卡片] 渲染浏览器: <路径>`；找不到时会打 `⚠️` 开头的安装指引。
+
+**机器上一个浏览器都没有时**，任选一种装：
+
+```bash
+# Linux（Debian / Ubuntu）
+apt-get install -y chromium
+# Linux（Alpine / 容器镜像）
+apk add --no-cache chromium
+# Linux（RHEL / CentOS）
+dnf install -y chromium
+# 不限平台：下到 playwright 缓存，插件会自动找到
+npx --yes playwright-core install chromium
+```
+
+也可以直接指定（值必须是真实存在的文件）：
 
 ```bash
 export JSXP_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
+
+常见报错对照：
+
+| 报错 | 含义 | 处理 |
+| --- | --- | --- |
+| `executable doesn't exist at …` | 指到的路径没有文件 | 删掉对应环境变量让插件自动探测，或改成正确路径 |
+| `未找到可用的浏览器` | 本机没装 Chrome/Chromium/Edge | 按上表装一个 |
+| `Cannot allocate memory` | 内存不够起浏览器 | 加内存 / 调小并发 / 稍后重试 |
+| `Target closed`、`crash` | 浏览器进程崩了 | 插件会自动丢弃实例重建；反复出现查磁盘与内存 |
 
 ### 启动
 
