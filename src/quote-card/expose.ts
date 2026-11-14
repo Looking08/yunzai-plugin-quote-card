@@ -17,7 +17,7 @@
  *   inputSchema/outputSchema、effect、authorize 和 ExposeCallContext。
  *   这里按运行时能力探测，一次定义两种形态都能注册。
  */
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
 import React from 'react';
 import * as alemon from 'alemonjs';
@@ -251,9 +251,8 @@ const readVersion = async (): Promise<string> => {
 const slotBackground = async (slot: number): Promise<string> => {
   const file = await findBgFile(slot);
   if (!file) throw new Error(`背景槽位 ${slot} 还没有图片`);
-  const url = await fileToDataUrl(file);
-  if (!url) throw new Error(`背景槽位 ${slot} 的图片读取失败`);
-  return url;
+  // file:// 直读，别把十几 MB 的图转成 base64 再塞进 HTML
+  return pathToFileURL(file).href;
 };
 
 /** 下一个空槽位（写满为止） */

@@ -1,7 +1,7 @@
 {
   "name": "alemonjs-quote-card",
-  "version": "1.1.5",
-  "description": "名言卡片（quote-card）ALemonJS 版：引用一条消息生成名言卡片，支持自定义背景与分辨率，并通过 Expose 向其他插件共享出图能力",
+  "version": "1.1.6",
+  "description": "名言卡片（quote-card）ALemonJS 版：引用一条消息生成名言卡片，支持自定义背景与分辨率，内置渲染引擎装完即用，并通过 Expose 向其他插件共享出图能力",
   "author": "Looking08",
   "license": "MIT",
   "type": "module",
@@ -18,10 +18,14 @@
   "dependencies": {
     "jsxp": "^1.4.0"
   },
+  "optionalDependencies": {
+    "@pixel.js/shotium": "^0.12.4"
+  },
   "peerDependencies": {
     "alemonjs": ">=2.1.100"
   },
   "devDependencies": {
+    "@pixel.js/shotium": "^0.12.4",
     "@types/node": "^26.6.5",
     "alemonjs": "^2.1.112",
     "koa-router": "^14.0.0",

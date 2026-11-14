@@ -111,7 +111,8 @@ const listBackgrounds = async () => {
 };
 
 /**
- * 注册名言卡片管理接口（挂在应用 koaRouter 上，最终路径形如 /app/api/quote-card/*）
+ * 注册名言卡片管理接口（挂在应用 koaRouter 上，最终路径形如
+ * /apps/<插件包名>/api/quote-card/*，注册进主应用时是 /app/api/quote-card/*）
  */
 export const registerQuoteCardHttp = (router: any) => {
   // 管理页

@@ -62,15 +62,47 @@ npm i ./packages/alemonjs-quote-card
 alemonc add apps alemonjs-quote-card
 ```
 
-插件自身唯一的运行期依赖是 `jsxp`（自带 react / playwright-core），`alemonjs` 以 peerDependency 声明。
+运行期依赖两个：`jsxp`（编译卡片 HTML，自带 react / playwright-core）和出图引擎
+`@pixel.js/shotium`（约 30~40MB，按 `optionalDependencies` 声明——平台没有预编译包时
+`npm i` 不会失败，而是自动退回本机浏览器）。`alemonjs` 以 peerDependency 声明。
 第 2 步若报 `Cannot find package 'jsxp'`，补一条 `npm i jsxp` 即可。
 
 > 用 yarn / pnpm 的话，对应 `yarn add file:./packages/alemonjs-quote-card`，
 > 或把 `"workspaces": ["packages/*"]` 写进宿主 package.json 后直接 `install`（会自动建软链）。
 
-### 浏览器（截图用，唯一需要环境配合的东西）
+### 出图引擎（默认自带，不用装浏览器）
 
-出图靠一个真实的 Chromium。插件**不写死任何路径**，按下面顺序自动找，找到就用：
+出图靠一个 Blink 渲染内核。**默认用随插件安装下来的内置引擎**，装完就能用：
+
+| 顺序 | 引擎 | 说明 |
+| --- | --- | --- |
+| 1（默认） | `@pixel.js/shotium` | 从 Chromium 剥离出的 Blink + Skia 内核，随 npm 包装好对应平台的二进制（Windows / macOS / Linux × x64 / arm64，含 Alpine 的 musl）。**不需要本机装浏览器、不需要 root、不执行 JS**。冷启约 1s，单张 10~500ms |
+| 2（回退） | 本机 Chromium | 内置引擎装不上（平台没有预编译包）或运行时崩了，自动退回 `playwright-core` + 本机 Chrome / Chromium / Edge |
+
+启动日志会打一行 `[名言卡片] 渲染引擎: …`，写的是这次实际用的哪一个。
+
+想强制指定：
+
+```bash
+QUOTE_CARD_RENDER_ENGINE=shotium   # 只认内置引擎（机器上没浏览器也能跑）
+QUOTE_CARD_RENDER_ENGINE=chromium  # 只用本机浏览器
+```
+
+也可以写在 `alemon.config.yaml` 的 `quote-card.render_engine`。
+
+觉得出图慢想定位瓶颈时，`QUOTE_CARD_DEBUG=1`（或 `touch /tmp/quote-card-debug`）会让日志打出
+编译 / 落盘 / 截图 / 排队各阶段的耗时。
+
+**唯一的系统要求是中文字体**（文字要靠系统字体渲染，插件不带字体）：
+
+```bash
+apk add --no-cache font-noto-cjk          # Alpine / 容器
+apt-get install -y fonts-noto-cjk         # Debian / Ubuntu
+```
+
+没装中文字体时卡片能出，但中文会变成方框——这不是报错，是字体缺失，按上面装一个即可。
+
+回退到本机浏览器时，**不写死任何路径**，按下面顺序找，找到就用：
 
 1. 环境变量：`JSXP_EXECUTABLE_PATH` / `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` / `CHROMIUM_PATH` / `GOOGLE_CHROME_BIN`
 2. `PATH` 里的命令：`chromium` / `chromium-browser` / `google-chrome` / `chrome` / `microsoft-edge` / `msedge` / `brave-browser`
@@ -80,9 +112,7 @@ alemonc add apps alemonjs-quote-card
    - Linux：`/usr/bin`、`/usr/local/bin`、`/snap/bin`、`/opt/google/chrome` 等
 4. playwright / puppeteer 的下载缓存（`npx playwright-core install chromium` 装的那份）
 
-启动时日志会打一行 `[名言卡片] 渲染浏览器: <路径>`；找不到时会打 `⚠️` 开头的安装指引。
-
-**机器上一个浏览器都没有时**，任选一种装：
+真要退回浏览器、机器上又一个都没有时，任选一种装：
 
 ```bash
 # Linux（Debian / Ubuntu）
@@ -106,9 +136,11 @@ export JSXP_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Goog
 | 报错 | 含义 | 处理 |
 | --- | --- | --- |
 | `executable doesn't exist at …` | 指到的路径没有文件 | 删掉对应环境变量让插件自动探测，或改成正确路径 |
-| `未找到可用的浏览器` | 本机没装 Chrome/Chromium/Edge | 按上表装一个 |
+| `没有可用的出图引擎` | 内置引擎装不上，本机也没浏览器 | `npm i @pixel.js/shotium`，或按上表装一个浏览器 |
+| `Cannot open shared object file` / `GLIBC` | 内置引擎与该平台不匹配 | 插件会自动退回本机浏览器；也可 `QUOTE_CARD_RENDER_ENGINE=chromium` |
 | `Cannot allocate memory` | 内存不够起浏览器 | 加内存 / 调小并发 / 稍后重试 |
 | `Target closed`、`crash` | 浏览器进程崩了 | 插件会自动丢弃实例重建；反复出现查磁盘与内存 |
+| 中文变方框 | 系统没有中文字体 | 装 `font-noto-cjk`（见上） |
 
 ### 启动
 
@@ -160,7 +192,19 @@ node index.js --platform @alemonjs/onebot --serverPort 17117
 
 ## Web 管理页
 
-`GET /app/api/quote-card/admin`（拼在宿主项目的 HTTP 端口下）：
+插件注册在**自己的应用**下，ALemonJS 会按应用名加前缀，所以地址是：
+
+```
+http://<宿主地址>:<端口>/apps/alemonjs-quote-card/api/quote-card/admin
+                         └──── 插件包名 ────┘
+```
+
+> 路径前缀由加载方式决定，不是写死的：
+> - 插件作为独立应用（`alemonc add apps alemonjs-quote-card`，推荐）：`/apps/alemonjs-quote-card/api/...`
+> - 插件被注册进主应用（`apps.main` 里 import 插件）：`/app/api/...`
+>
+> 管理页里所有请求都走相对路径，两种挂载下都能直接用。访问 `/app/api/...` 得到
+> `{"code":403,"message":"非法路径"}` 就说明该换前一种前缀了。
 
 - 分辨率预设（1280×640 / 1920×960 / 1080×540 / 2560×1280）或手填宽高 + 画质
 - 「照片列表允许所有人查看」开关（默认开启，关闭后只有主人能用 `名言照片列表`）
@@ -171,7 +215,7 @@ node index.js --platform @alemonjs/onebot --serverPort 17117
 > ⚠️ 管理页**没有鉴权**。宿主项目若对公网开放，请自行在反向代理上加 Basic Auth / token，
 > 或把监听端口绑到 `127.0.0.1`。
 
-HTTP API（统一返回 `{code, message, data}`）：
+HTTP API（路径相对于上面的应用前缀，统一返回 `{code, message, data}`）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |

@@ -56,7 +56,7 @@ export default async () => {
     );
 
     if (!img) {
-      await reply('❌ 列表图生成失败，请检查 chromium 是否正常');
+      await reply('❌ 列表图生成失败：出图引擎没有返回图片，看一眼日志里 `[名言卡片]` 的提示');
       return;
     }
 

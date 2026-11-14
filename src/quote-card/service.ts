@@ -2,11 +2,12 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import React from 'react';
-import { Component, Playwright } from 'jsxp';
+import { Component } from 'jsxp';
 import { getConfigValue } from 'alemonjs';
 import QuoteCard from './card';
 import { readSettings } from './settings';
-import { cleanError, launchErrorHint, resolveBrowserPath } from './browser';
+import { cleanError } from './browser';
+import { debugTiming, renderImage } from './renderer';
 
 export const MAX_SLOT = 100;
 
@@ -78,9 +79,14 @@ export const fontSize = (text: string) => {
 
 export const detectType = (buf: Buffer) => IMG_TYPES.find(t => t.test(buf)) ?? { ext: 'jpg', mime: 'image/jpeg' };
 
-/** 下载远程图片 */
-export const downloadImage = async (url: string): Promise<Buffer> => {
-  const res = await fetch(url, { headers: { 'User-Agent': UA }, redirect: 'follow' });
+/** 下载远程图片（5 秒超时：头像是可选项，不能因为 qlogo 慢就把整张卡片拖住） */
+export const downloadImage = async (url: string, timeoutMs = 5000): Promise<Buffer> => {
+  const init: RequestInit = { headers: { 'User-Agent': UA }, redirect: 'follow' };
+  const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(timeoutMs)
+    : undefined;
+  if (signal) init.signal = signal;
+  const res = await fetch(url, init);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (!buf.length) throw new Error('图片为空');
@@ -90,6 +96,8 @@ export const downloadImage = async (url: string): Promise<Buffer> => {
 /** 下载并转为 data URL，失败时返回空串（不阻断出图） */
 export const toDataUrl = async (url: string): Promise<string> => {
   if (!url) return '';
+  // 本来就是 data URL / file URL 的，不用再下载
+  if (/^(data:|file:)/i.test(url)) return url;
   try {
     const buf = await downloadImage(url);
     const type = detectType(buf);
@@ -178,7 +186,13 @@ export const saveBg = async (n: number, buf: Buffer) => {
   return type;
 };
 
-/** 随机挑一张已设置的背景，返回 data URL */
+/**
+ * 随机挑一张已设置的背景，返回可直接放进 <img src> 的地址
+ *
+ * 返回 **file:// 而不是 data URL**：一张 12MB 的原图转成 base64 是 16MB 字符串，
+ * 编译 HTML 要多花 300ms、落盘再读一遍，渲染前还要把它塞进 DOM；
+ * 实测同一张图「file:// 直读」1201ms，「内嵌 base64」2832ms，输出字节完全一样。
+ */
 export const pickBackground = async (): Promise<string> => {
   try {
     const slots = await listBgSlots();
@@ -186,10 +200,7 @@ export const pickBackground = async (): Promise<string> => {
     const pick = slots[Math.floor(Math.random() * slots.length)];
     const file = await findBgFile(pick);
     if (!file) return '';
-    const buf = await fs.readFile(file);
-    const ext = path.extname(file).slice(1).toLowerCase();
-    const mime = EXT_MIME[ext] ?? 'image/jpeg';
-    return `data:${mime};base64,${buf.toString('base64')}`;
+    return pathToFileURL(file).href;
   } catch (err) {
     logger.error(`[名言卡片] 加载背景失败: ${(err as Error).message}`);
     return '';
@@ -208,72 +219,48 @@ export type QuoteCardImageOptions = {
   bgColor?: string;
 };
 
-/** 浏览器可执行文件由 browser.ts 探测（不再写死容器路径） */
-let engine: any = null;
-
-/** 复用同一个无头浏览器实例，显式关闭沙箱以适配容器环境 */
-const getEngine = () => {
-  if (!engine) {
-    const executablePath = resolveBrowserPath();
-    if (!executablePath) {
-      // 早点说清楚，别等 jsxp 内部抛一句看不出所以然的话
-      throw new Error('未找到可用的浏览器：装一个 Chrome / Chromium / Edge 即可，或用 JSXP_EXECUTABLE_PATH 指定路径（安装指引见日志）');
-    }
-    engine = new Playwright({
-      headless: true,
-      executablePath,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none']
-    });
-  }
-  return engine;
-};
-
-/** 串行化渲染，避免并发开过多页面 */
-let renderQueue: Promise<unknown> = Promise.resolve();
-
 /**
  * 渲染名言卡片为图片 Buffer
- * 使用 jsxp（Playwright + Chromium）替代原插件的 puppeteer.screenshots
+ *
+ * HTML 由 jsxp 编译，出图交给 renderer（优先内置 Blink 内核，回退本机 Chromium）。
+ * 卡片是固定 1280×640 的画幅，用 selector:'body' 精确截这一块，避免多余留白。
  */
 export const renderQuoteCard = async (options: QuoteCardImageOptions): Promise<Buffer | null> => {
+  const started = Date.now();
   const avatar = await toDataUrl(options.avatarUrl || resolveAvatarUrl(options.qq ?? '', options.botId));
   const settings = await readSettings();
 
-  const task = async () => {
-    const element = React.createElement(QuoteCard, {
-      bgColor: options.bgColor ?? randColor(),
-      bgImage: options.bgImage ?? '',
-      avatar,
-      text: options.text,
-      fontSize: fontSize(options.text),
-      senderName: options.senderName,
-      width: settings.width,
-      height: settings.height
+  const element = React.createElement(QuoteCard, {
+    bgColor: options.bgColor ?? randColor(),
+    bgImage: options.bgImage ?? '',
+    avatar,
+    text: options.text,
+    fontSize: fontSize(options.text),
+    senderName: options.senderName,
+    width: settings.width,
+    height: settings.height
+  });
+
+  const html = await new Component().compile({ component: element } as any, 'local');
+  debugTiming('compileCard', Date.now() - started, `avatar=${avatar ? 'y' : 'n'} html=${(html.length / 1024).toFixed(0)}KB`);
+  try {
+    const buf = await renderImage({
+      html,
+      selector: 'body',
+      viewport: { width: settings.width, height: settings.height },
+      quality: settings.quality,
+      // 背景走 file://（省掉十几 MB 的 base64），页面读本地图片需要显式放行
+      allowFileAccess: /^file:/i.test(options.bgImage ?? '') || /^file:/i.test(avatar)
     });
-
-    const html = await new Component().compile({ component: element } as any, 'local');
-    let buf: Uint8Array | null = null;
-    try {
-      buf = await getEngine().render(html, {
-        selector: 'body',
-        screenshot: { type: 'jpeg', quality: settings.quality }
-      });
-    } catch (err: any) {
-      const detail = String(err?.message ?? err);
-      // 已经是人话（比如 getEngine 提前抛的「未找到可用的浏览器…」）就原样往上抛
-      if (detail.includes('未找到可用的浏览器')) throw err;
-      const hint = launchErrorHint(detail, resolveBrowserPath());
-      logger.error(`[名言卡片] jsxp 渲染失败: ${detail}`);
-      throw new Error(hint ? `渲染失败: ${cleanError(detail)}${hint}` : detail);
-    }
-
-    return buf && buf.length ? Buffer.from(buf) : null;
-  };
-
-  const run = renderQueue.then(task, task);
-  renderQueue = run.catch(() => undefined);
-
-  return run as Promise<Buffer | null>;
+    debugTiming('cardTotal', Date.now() - started);
+    return buf?.length ? buf : null;
+  } catch (err: any) {
+    const detail = String(err?.message ?? err);
+    // 已经是人话（比如「没有可用的出图引擎…」）就原样往上抛
+    if (/没有可用的出图引擎|内置引擎不可用/.test(detail)) throw err;
+    logger.error(`[名言卡片] 卡片渲染失败: ${detail}`);
+    throw new Error(`渲染失败: ${cleanError(detail)}`);
+  }
 };
 
 /** 本地文件转 data URL（渲染时内嵌，避免 file:// 被拦） */
@@ -288,97 +275,20 @@ export const fileToDataUrl = async (file: string): Promise<string> => {
   }
 };
 
-/** 页面渲染专用浏览器：列表页图片走 file://，不把几十 MB base64 塞进 HTML */
-let pageBrowser: any = null;
-let pageBrowserIdle: any = null;
-
-/** 启动一次 Chromium（失败时把原因翻译成人能看懂的话） */
-const launchPageBrowser = async () => {
-  const pw: any = await import('playwright-core');
-  const chromium = pw.chromium ?? pw.default?.chromium;
-  if (!chromium?.launch) throw new Error('playwright-core 未正确加载（chromium 为 undefined）');
-  const executablePath = resolveBrowserPath();
-  return chromium.launch({
-    headless: true,
-    // 探到了就用它；没探到就别传，交给 playwright 自己按内置 registry 找
-    ...(executablePath ? { executablePath } : {}),
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--allow-file-access-from-files'
-    ]
-  });
-};
-
-/**
- * 取页面渲染用的浏览器；挂掉或从没启动过就现启
- * 启动失败会重试一次（Docker 刚重启、资源临时紧张时能自救）
- */
-const getPageBrowser = async (): Promise<any> => {
-  if (pageBrowser && pageBrowser.isConnected()) {
-    if (pageBrowserIdle) {
-      clearTimeout(pageBrowserIdle);
-      pageBrowserIdle = null;
-    }
-    return pageBrowser;
-  }
-
-  pageBrowser = null;
-  let lastErr: any = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      pageBrowser = await launchPageBrowser();
-      return pageBrowser;
-    } catch (err: any) {
-      lastErr = err;
-      pageBrowser = null;
-      if (attempt === 1) {
-        const wait = 800;
-        logger.warn(`[名言卡片] Chromium 启动失败，${wait}ms 后重试一次: ${err?.message ?? err}`);
-        await new Promise((r) => setTimeout(r, wait));
-      }
-    }
-  }
-
-  // 没有可用浏览器时，别让用户在聊天里看 playwright 的技术细节 —— 直接给能照做的结论
-  const attempted = resolveBrowserPath();
-  const detail = String(lastErr?.message ?? lastErr);
-  logger.error(`[名言卡片] 启动浏览器失败: ${detail}`);
-  if (!attempted) {
-    throw new Error(`未找到可用的浏览器：装一个 Chrome / Chromium / Edge 即可，或用 JSXP_EXECUTABLE_PATH 指定路径（安装指引见日志）`);
-  }
-  throw new Error(`启动 Chromium 失败: ${cleanError(detail)}${launchErrorHint(detail, attempted)}`);
-};
-
-/** 空闲 5 分钟自动关掉，别长期占内存 */
-const touchPageBrowserIdle = () => {
-  if (pageBrowserIdle) clearTimeout(pageBrowserIdle);
-  pageBrowserIdle = setTimeout(() => {
-    pageBrowser?.close?.().catch(() => undefined);
-    pageBrowser = null;
-    pageBrowserIdle = null;
-  }, 5 * 60 * 1000);
-  pageBrowserIdle?.unref?.();
-};
-
-/** 浏览器疑似半死（崩溃/端口断开）就丢掉实例，下次渲染重新 launch，避免一直失败 */
-const dropBrowserIfDead = (err: unknown) => {
-  const m = String((err as any)?.message ?? err);
-  if (/Target closed|Connection closed|has been closed|crash|Protocol error|browser has disconnected/i.test(m)) {
-    logger.warn(`[名言卡片] 浏览器已断开，丢弃实例待重建: ${m.slice(0, 120)}`);
-    pageBrowser?.close?.().catch(() => undefined);
-    pageBrowser = null;
-  }
-};
-
-/** 缩略图宽度：列表页每格只有 190px 高，喂原图纯属浪费 */
+/** 缩略图最长边：列表页每格只有 190px 高，喂原图纯属浪费 */
 const THUMB_WIDTH = 480;
 const THUMB_DIR = path.join(BG_DIR, '.thumbs');
 
+/** 用一张最小 HTML 把本地图片按最长边缩放（纯 CSS，不执行 JS，两种引擎都适用） */
+const thumbHtml = (fileHref: string) =>
+  `<html><head><meta charset="utf-8"></head><body style="margin:0;background:#fff">` +
+  `<img src="${fileHref}" style="display:block;max-width:${THUMB_WIDTH}px;max-height:${THUMB_WIDTH}px"></body></html>`;
+
 /**
  * 生成（或复用）某张背景的缩略图，返回缩略图路径；失败返回 null
- * 用 Chromium 自己解码缩放，不额外依赖 sharp / ffmpeg
+ *
+ * 之前这一步靠 page.evaluate 量出原图尺寸再算缩放，内置引擎不跑 JS 就用不了；
+ * 改成 CSS 的 max-width/max-height（保持比例自适应），再按元素盒子截图，效果一样。
  */
 const ensureThumb = async (file: string): Promise<string | null> => {
   const out = path.join(THUMB_DIR, `${path.basename(file).replace(/\.[^.]+$/, '')}.jpg`);
@@ -390,53 +300,37 @@ const ensureThumb = async (file: string): Promise<string | null> => {
   }
   try {
     await fs.mkdir(THUMB_DIR, { recursive: true });
-    const browser = await getPageBrowser();
-    const page = await browser.newPage({ viewport: { width: THUMB_WIDTH, height: THUMB_WIDTH } });
-    try {
-      await page.goto(pathToFileURL(file).href, { waitUntil: 'load', timeout: 30_000 });
-      // 按最长边 480 等比缩放，同时把页面尺寸调成缩放后的尺寸，避免截图带白边
-      const dim = await page.evaluate((maxW: number) => {
-        const img = document.querySelector('img') as HTMLImageElement | null;
-        const nw = img?.naturalWidth || maxW;
-        const nh = img?.naturalHeight || maxW;
-        const w = Math.max(1, Math.min(nw, maxW));
-        const h = Math.max(1, Math.round((nh * w) / nw));
-        if (img) {
-          img.style.width = `${w}px`;
-          img.style.height = `${h}px`;
-          img.style.display = 'block';
-        }
-        document.documentElement.style.margin = '0';
-        document.body.style.margin = '0';
-        return { w, h };
-      }, THUMB_WIDTH);
-      await page.setViewportSize({ width: dim.w, height: dim.h });
-      const buf = await page.screenshot({
-        type: 'jpeg',
-        quality: 75,
-        clip: { x: 0, y: 0, width: dim.w, height: dim.h }
-      });
-      if (!buf || !buf.length) return null;
-      await fs.writeFile(out, buf);
-      return out;
-    } finally {
-      await page.close().catch(() => undefined);
-      touchPageBrowserIdle();
-    }
+    const buf = await renderImage({
+      html: thumbHtml(pathToFileURL(file).href),
+      selector: 'img',
+      viewport: { width: THUMB_WIDTH, height: THUMB_WIDTH },
+      quality: 75,
+      allowFileAccess: true
+    });
+    if (!buf?.length) return null;
+    await fs.writeFile(out, buf);
+    return out;
   } catch (err: any) {
-    dropBrowserIfDead(err);
-    logger.warn(`[名言卡片] 生成缩略图失败 ${path.basename(file)}: ${err?.message ?? err}`);
+    logger.warn(`[名言卡片] 生成缩略图失败 ${path.basename(file)}: ${cleanError(err?.message ?? err, 80)}`);
     return null;
   }
 };
+
+/**
+ * 长图渲染的视口高度
+ *
+ * 内置引擎的 fullPage 取的是 max(文档高度, 视口高度)：视口给 900，内容只有 530 时
+ * 出来的图就是 900 高，底部一大片空白；给个小视口才能拿到真正的内容高度。
+ * 这两个页面都是内容驱动的高度（没有 vh / 100% 依赖），压小视口不影响排版。
+ */
+const PAGE_VIEWPORT_HEIGHT = 200;
 
 /**
  * 渲染任意页面组件为 JPEG
  *
  * 之前是把 HTML（含每张背景的 base64 内嵌）直接交给 page.setContent，
  * 背景一多 HTML 就涨到几十 MB（5 张 43MB 的原图 ≈ 57MB），setContent 60s 超时。
- * 现在图片在 HTML 里只放 file:// 路径，HTML 写到临时文件后用 page.goto 打开，
- * 传输量从几十 MB 降到几 KB，由浏览器自己去读本地文件。
+ * 现在图片在 HTML 里只放 file:// 路径（缩略图），由引擎自己去读本地文件。
  */
 export const renderPage = async (
   component: React.ReactElement,
@@ -446,34 +340,22 @@ export const renderPage = async (
   const settings = await readSettings();
   const q = quality ?? settings.quality;
 
-  const task = async () => {
-    const html = await new Component().compile({ component } as any, 'local');
-    const tmp = path.join(process.cwd(), 'data', `.qc-page-${process.pid}.html`);
-    await fs.mkdir(path.dirname(tmp), { recursive: true });
-    await fs.writeFile(tmp, html, 'utf8');
-    try {
-      const browser = await getPageBrowser();
-      const page = await browser.newPage({ viewport: { width: viewportWidth, height: 900 } });
-      try {
-        await page.goto(pathToFileURL(tmp).href, { waitUntil: 'load', timeout: 30_000 });
-        const buf = await page.screenshot({ type: 'jpeg', quality: q, fullPage: true });
-        return buf && buf.length ? Buffer.from(buf) : null;
-      } finally {
-        await page.close().catch(() => undefined);
-      }
-    } catch (err) {
-      dropBrowserIfDead(err);
-      throw err;
-    } finally {
-      touchPageBrowserIdle();
-      await fs.unlink(tmp).catch(() => undefined);
-    }
-  };
-
-  const run = renderQueue.then(task, task);
-  renderQueue = run.catch(() => undefined);
-
-  return run as Promise<Buffer | null>;
+  const html = await new Component().compile({ component } as any, 'local');
+  try {
+    const buf = await renderImage({
+      html,
+      fullPage: true,
+      viewport: { width: viewportWidth, height: PAGE_VIEWPORT_HEIGHT },
+      quality: q,
+      // 列表页的图片是 file:// 缩略图，不给权限就全是空框
+      allowFileAccess: true
+    });
+    return buf?.length ? buf : null;
+  } catch (err: any) {
+    const detail = String(err?.message ?? err);
+    if (/没有可用的出图引擎|内置引擎不可用/.test(detail)) throw err;
+    throw new Error(`渲染失败: ${cleanError(detail)}`);
+  }
 };
 
 /** 列表页条目：槽位 + 图片地址 + 体积文案 */

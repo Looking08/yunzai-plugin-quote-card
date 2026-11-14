@@ -1,7 +1,10 @@
 /**
- * 浏览器可执行文件探测（出图用）
+ * 浏览器可执行文件探测（出图引擎的**回退**路径）
  *
- * 为什么需要它：jsxp 与 playwright 都需要一个真实的 Chromium。之前代码把容器里的
+ * v1.1.6 起出图默认走内置引擎（见 renderer.ts），本机浏览器只是备选：
+ * 内置引擎装不上、加载不了、或运行时崩了才用得上这里。
+ *
+ * 为什么需要探测：playwright 需要一个真实的 Chromium。之前代码把容器里的
  * `/usr/bin/chromium-browser` 当成默认值写死，于是 macOS、Windows、非 Debian 发行版一律报
  *   Failed to launch chromium because executable doesn't exist at /usr/bin/chromium-browser
  * 「本机能跑」只是因为我这台机器的容器里恰好有这个路径。
@@ -248,35 +251,6 @@ export const executableEnvKeys = (): string => ENV_KEYS.join(' / ');
 /** 一行版提示：能塞进聊天回复（受 180 字符限制） */
 export const missingBrowserHint = (): string =>
   `（未找到可用的浏览器：装一个 Chrome / Chromium / Edge 即可，或设置 ${ENV_KEYS[0]} 指定路径）`;
-
-/** 多行版排查说明：写日志、打启动横幅用 */
-export const missingBrowserMessage = (): string => {
-  const lines = ['未找到可用的浏览器（Chrome / Chromium / Edge 都不存在），出图功能无法工作。', '装上任意一个即可：'];
-  if (process.platform === 'darwin') {
-    lines.push(
-      '  macOS:   brew install --cask google-chrome     （或直接装 Google Chrome）',
-      '  或下载到缓存: npx --yes playwright-core install chromium'
-    );
-  } else if (process.platform === 'win32') {
-    lines.push('  Windows: 装 Google Chrome 即可（系统一般自带 Edge）', '  或下载到缓存: npx --yes playwright-core install chromium');
-  } else {
-    lines.push(
-      '  Debian/Ubuntu: apt-get install -y chromium',
-      '  Alpine:        apk add --no-cache chromium',
-      '  RHEL/CentOS:   dnf install -y chromium',
-      '  或下载到缓存:  npx --yes playwright-core install chromium'
-    );
-  }
-  lines.push(`也可以直接指定：${executableEnvKeys()}=/path/to/chrome`);
-  return lines.join('\n');
-};
-
-/** 启动时打一行状态：找到了就说路径，没找到就说怎么装 */
-export const browserStatusLine = (): string => {
-  const found = resolveBrowserPath();
-  if (found) return `渲染浏览器: ${found}`;
-  return `⚠️ ${missingBrowserMessage()}`;
-};
 
 /**
  * 把 playwright 的多行报错压成一行可读文本

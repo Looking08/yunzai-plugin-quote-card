@@ -1,5 +1,66 @@
 # 更新日志
 
+## v1.1.6
+
+### 修复
+
+- **彻底解决「别人装完插件用不了」**：不再要求本机预装浏览器。
+  v1.1.5 只是把写死的路径换成自动探测 —— 探测得再准，机器上没装 Chrome / Chromium / Edge
+  一样出不了图（容器里没装 chromium、Windows 精简版、某些 VPS 全都属于这一类）。
+
+  现在出图链路换成**内置引擎优先**（新增 `src/quote-card/renderer.ts`）：
+
+  | 顺序 | 引擎 | 说明 |
+  | --- | --- | --- |
+  | 1 | `@pixel.js/shotium` | 随 npm 包安装的 Blink + Skia 内核，8 个平台预编译（含 Alpine musl）。不执行 JS、不需要 root、不需要系统装浏览器 |
+  | 2 | 本机 Chromium | 内置引擎装不上或运行时崩了自动回退，保持原有能力 |
+
+  渲染层被抽成统一入口 `renderImage()`：卡片（`selector: 'body'`）、帮助图 / 列表图
+  （`fullPage`）、缩略图（`selector: 'img'`）三条链路共用，两个后端都实现了同样的语义。
+
+- **缩略图不再依赖 JS**：原来靠 `page.evaluate` 量原图尺寸算缩放，内置引擎没有 V8 用不了；
+  改成 CSS 的 `max-width` / `max-height`（保持比例）+ 按元素盒子截图，效果一致且更快。
+
+- **卡片背景改用 `file://` 直读**：以前把原图转成 base64 内嵌进 HTML（12MB 的图 ≈ 16MB 字符串），
+  编译、落盘、解析都要为这几十 MB 买单。实测同一张图：
+  `file://` 直读 1201ms，内嵌 base64 2832ms + 编译 330ms，**输出字节完全一致**。
+  背景与 Expose 的 `background` 槽位都走这条路，`allowFileAccess` 只在用到本地图片时打开。
+
+- **长图高度还原**：内置引擎的 `fullPage` 取 `max(文档高度, 视口高度)`，视口给 900 时
+  内容只有 530 的列表页会带一大片空白。改为用小视口（200）探测，拿到真正的内容高度。
+
+- **头像下载加 5 秒超时**：`q1.qlogo.cn` 慢的时候会把整张卡片拖到十几秒；现在超时就当没有头像，
+  卡片照常出。`data:` / `file:` 开头的地址直接跳过下载。
+
+- **管理台地址前缀写错**：文档一直写 `/app/api/quote-card/admin`，那是「插件被注册进主应用」
+  时的路径。插件按推荐方式作为独立应用加载（`alemonc add apps alemonjs-quote-card`）时，
+  ALemonJS 会加应用名前缀，实际是 `/apps/alemonjs-quote-card/api/quote-card/admin`；
+  照旧地址访问只会得到 `{"code":403,"message":"非法路径"}`。README 与源码注释已按加载方式
+  分别说明，管理页内请求都是相对路径，两种挂载下都能直接用。
+
+- **出图失败提示不再指向 chromium**：`帮助图生成失败，请检查 chromium 是否正常` 在默认走内置
+  引擎后已经误导人，改为指向日志里的 `[名言卡片]` 提示。另外把 `QUOTE_CARD_RENDER_ENGINE=chromium`
+  但机器上没有浏览器的情况单独拆出来——原来会报「内置引擎装不上」（其实装好了，是被自己关掉的），
+  现在直接告诉你去掉这个设置即可。
+
+- **渲染快了一个数量级**：同一张 1280×640 卡片（含 585KB 背景图）实测
+  Chromium 冷启 10.3s / 内置引擎 1.2s；热渲染 11~460ms。
+  两者输出经像素比对：平均通道差 1.4/255，差异 >32 的像素占比 0.00%。
+
+- **不再往用户家目录写缓存**：引擎以 `cacheDir: null` 启动（只渲染本地文件与 data URL，
+  用不上 HTTP 缓存），空闲 5 分钟 `releaseMemory({ releaseWorkingSet: true })` 归还工作集。
+
+### 变更
+
+- 出图引擎可用环境变量 / 配置强制指定：`QUOTE_CARD_RENDER_ENGINE=shotium|chromium`，
+  或 `alemon.config.yaml` 的 `quote-card.render_engine`。
+- 启动自检改为 `[名言卡片] 渲染引擎: shotium（内置 Blink，无需另装浏览器）`，
+  回退时显示实际使用的浏览器路径；两者都没有时提出可照做的结论。
+- `optionalDependencies` 引入 `@pixel.js/shotium`：装不上只会少一个后端，不会让插件安装失败。
+- README 新增「出图引擎」一节，补充**中文字体是唯一系统要求**（`font-noto-cjk`）与报错对照表。
+- 排查性能问题：`QUOTE_CARD_DEBUG=1`（或 `touch /tmp/quote-card-debug`）会在日志里打出
+  编译 / 落盘 / 截图 / 排队各阶段耗时。
+
 ## v1.1.5
 
 ### 修复
